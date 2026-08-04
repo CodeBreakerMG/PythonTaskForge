@@ -216,3 +216,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+
+# TaskForge local database (may contain sensitive task/log data)
+database/*.db
+database/*.db-journal
+database/*.db-wal
+database/*.db-shm
+
+# Runtime logs
+logs/
+*.log

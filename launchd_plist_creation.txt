@@ -1,0 +1,42 @@
+accomodate it to the PATH desired:
+
+
+mkdir -p /Users/manuelmoran/Documents/PROJECTS/PythonTaskForge/logs
+
+launchctl bootout gui/$(id -u)/com.taskforge.runtime 2>/dev/null
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.taskforge.runtime.plist
+launchctl enable gui/$(id -u)/com.taskforge.runtime
+launchctl kickstart -k gui/$(id -u)/com.taskforge.runtime
+
+Below the XML file. save it as com.taskforge.runtime.plist
+----
+
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.taskforge.runtime</string>
+
+    <key>ProgramArguments</key>
+    <array>
+    <!-- CHANGE PATH -->    <string>/Users/manuelmoran/Documents/PROJECTS/PythonTaskForge/.venv/bin/python</string> <!-- CHANGE PATH -->
+    <!-- CHANGE PATH -->    <string>/Users/manuelmoran/Documents/PROJECTS/PythonTaskForge/app.py</string>           <!-- CHANGE PATH -->
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/manuelmoran/Documents/PROJECTS/PythonTaskForge</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/manuelmoran/Documents/PROJECTS/PythonTaskForge/logs/launchd.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/manuelmoran/Documents/PROJECTS/PythonTaskForge/logs/launchd.err.log</string>
+</dict>
+</plist>

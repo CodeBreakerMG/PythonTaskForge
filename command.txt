@@ -1,0 +1,9 @@
+cd /Users/manuelmoran/Documents/PROJECTS/PythonTaskForge
+source .venv/bin/activate
+
+python app.py                  # GUI
+python app.py --list           # list tasks
+python app.py --run "Hello TaskForge"
+
+
+/Users/manuelmoran/Documents/PROJECTS/0017-StructuredAgendaReport/PYTHON/report_generator.py 
