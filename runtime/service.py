@@ -6,7 +6,8 @@ from pathlib import Path
 
 from loguru import logger
 
-from database.database import get_session, init_db
+from config.settings import AppSettings, load_settings, save_settings
+from database.database import get_db_path, get_session, init_db
 from database.models import History
 from runtime.executor import ExecutionResult, Executor
 from runtime.notifications import notify, notify_task_result
@@ -39,12 +40,15 @@ class TaskForgeService:
             level="INFO",
         )
 
-        init_db()
+        settings = load_settings()
+        db_path = init_db(settings.db_path)
+        # Persist resolved defaults the first time so Settings shows a real path.
+        save_settings(AppSettings(db_path=str(db_path)))
         self.registry.load()
         self._ensure_sample_task()
         self.scheduler.start()
         self._started = True
-        logger.info("TaskForge runtime ready")
+        logger.info("TaskForge runtime ready (db={})", db_path)
 
     def stop(self) -> None:
         if not self._started:
@@ -52,6 +56,29 @@ class TaskForgeService:
         self.scheduler.shutdown()
         self._started = False
         logger.info("TaskForge runtime stopped")
+
+    def database_path(self) -> Path:
+        return get_db_path()
+
+    def set_database_path(self, db_path: Path | str) -> Path:
+        """Switch SQLite file, reload tasks, and reschedule jobs."""
+        was_running = self._started
+        if was_running:
+            self.scheduler.shutdown()
+
+        settings = AppSettings(db_path=str(Path(db_path).expanduser()))
+        save_settings(settings)
+        path = init_db(settings.db_path)
+        self.registry.load()
+        self._ensure_sample_task()
+
+        if was_running:
+            self.scheduler = TaskScheduler(self.registry, on_run=self._scheduled_run)
+            self.scheduler.start()
+
+        logger.info("Switched database to {}", path)
+        notify("Database updated", f"Using {path}")
+        return path
 
     def run_task(self, name: str, *, notify_user: bool = True) -> ExecutionResult:
         task = self.registry.get(name)

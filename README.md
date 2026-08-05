@@ -148,60 +148,99 @@ Target:  df -h
 
 ---
 
-## Optional: start at login with launchd
+## Install as a macOS app (optional)
 
-TaskForge is designed so **launchd only starts the app once**. Create:
+You can keep using `python app.py`, or package TaskForge as a normal double-clickable Mac app.
 
-`~/Library/LaunchAgents/com.taskforge.runtime.plist`
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>com.taskforge.runtime</string>
-
-  <key>ProgramArguments</key>
-  <array>
-    <string>/ABSOLUTE/PATH/TO/PythonTaskForge/.venv/bin/python</string>
-    <string>/ABSOLUTE/PATH/TO/PythonTaskForge/app.py</string>
-  </array>
-
-  <key>WorkingDirectory</key>
-  <string>/ABSOLUTE/PATH/TO/PythonTaskForge</string>
-
-  <key>RunAtLoad</key>
-  <true/>
-
-  <key>KeepAlive</key>
-  <true/>
-
-  <key>StandardOutPath</key>
-  <string>/ABSOLUTE/PATH/TO/PythonTaskForge/logs/launchd.out.log</string>
-
-  <key>StandardErrorPath</key>
-  <string>/ABSOLUTE/PATH/TO/PythonTaskForge/logs/launchd.err.log</string>
-</dict>
-</plist>
-```
-
-Load it:
+### 1. Build `TaskForge.app`
 
 ```bash
-mkdir -p /ABSOLUTE/PATH/TO/PythonTaskForge/logs
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.taskforge.runtime.plist
-launchctl kickstart -k gui/$(id -u)/com.taskforge.runtime
+cd /path/to/PythonTaskForge
+source .venv/bin/activate
+pip install -r requirements.txt
+pip install pyinstaller
+
+pyinstaller \
+  --name TaskForge \
+  --windowed \
+  --noconfirm \
+  --clean \
+  --osx-bundle-identifier com.taskforge.runtime \
+  --add-data "tasks:tasks" \
+  app.py
 ```
 
-Unload:
+This creates:
+
+```text
+dist/TaskForge.app
+```
+
+Open it once to verify:
 
 ```bash
-launchctl bootout gui/$(id -u)/com.taskforge.runtime
+open dist/TaskForge.app
 ```
 
-> With `KeepAlive` enabled, quitting from the tray may relaunch the app. Unload the agent to stop it fully.
+### 2. Install the app
+
+Copy it into Applications:
+
+```bash
+cp -R dist/TaskForge.app /Applications/
+```
+
+Then open it from Finder, Spotlight, or:
+
+```bash
+open /Applications/TaskForge.app
+```
+
+> Building the `.app` does **not** register launchd by itself. Autostart is a separate step below.
+
+### 3. Start at login with launchd (optional)
+
+TaskForge is designed so **one LaunchAgent** starts the app at login; TaskForge manages all tasks internally.
+
+After `TaskForge.app` is installed:
+
+```bash
+cd /path/to/PythonTaskForge
+./scripts/install_launchd.sh
+```
+
+Or pass the app path explicitly:
+
+```bash
+./scripts/install_launchd.sh /Applications/TaskForge.app
+```
+
+What the script does:
+
+1. Finds `TaskForge.app` (`/Applications`, `~/Applications`, or `dist/`)
+2. Writes `~/Library/LaunchAgents/com.taskforge.runtime.plist`
+3. Loads the agent with `launchctl` (`RunAtLoad` + `KeepAlive`)
+4. Writes logs to `~/Library/Logs/TaskForge/`
+
+Check that it loaded:
+
+```bash
+launchctl print gui/$(id -u)/com.taskforge.runtime | head -40
+```
+
+### 4. Uninstall the login agent
+
+```bash
+./scripts/install_launchd.sh --uninstall
+```
+
+> With `KeepAlive` enabled, quitting from the tray may relaunch TaskForge. Use `--uninstall` to stop autostart fully.
+
+### Notes
+
+- First launch from an unsigned build may require **right-click → Open** (Gatekeeper)
+- Database location is configurable in the app under **Settings** (recommended for packaged use)
+- Prefer the `.app` + launchd script for daily use; use `python app.py` while developing
 
 ---
 
@@ -211,6 +250,8 @@ launchctl bootout gui/$(id -u)/com.taskforge.runtime
 PythonTaskForge/
 ├── app.py                 # Entrypoint (GUI + CLI)
 ├── requirements.txt
+├── scripts/
+│   └── install_launchd.sh # Register / unregister login LaunchAgent
 ├── runtime/
 │   ├── task.py            # Task model + schedule parser
 │   ├── registry.py        # In-memory registry ↔ SQLite
@@ -222,22 +263,29 @@ PythonTaskForge/
 │   ├── models.py          # SQLAlchemy models
 │   ├── database.py        # Engine / sessions
 │   └── taskforge.db       # Created at runtime (gitignored)
+├── config/
+│   └── settings.py        # DB path + app preferences
 ├── gui/
 │   ├── main_window.py     # Dashboard
 │   ├── task_editor.py     # Create / modify dialog
+│   ├── settings_dialog.py # Database location settings
 │   └── tray.py            # Menu-bar tray
 ├── tasks/
 │   └── hello.py           # Sample script
-└── logs/                  # App + launchd logs (gitignored)
+└── logs/                  # App logs (gitignored)
 ```
 
 ---
 
 ## Data & privacy
 
-- Task definitions, history, and logs live in **`database/taskforge.db`**
-- That file is **gitignored** — it may contain paths and command output from your machine
-- Runtime logs go under **`logs/`** (also gitignored)
+- The SQLite database path is **configurable** in the app: **Settings → Database file**
+- Preference file: `~/Library/Application Support/TaskForge/settings.json`
+- Default DB:
+  - existing project file `database/taskforge.db` if present (backward compatible)
+  - otherwise `~/Library/Application Support/TaskForge/taskforge.db`
+- Changing the path opens/creates that file; the old DB is left as-is
+- Runtime logs go under **`logs/`** (gitignored)
 
 ---
 

@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from gui.settings_dialog import SettingsDialog
 from gui.task_editor import TaskEditorDialog
 from gui.tray import TaskForgeTray
 from runtime.notifications import set_tray_hook
@@ -53,6 +54,7 @@ class MainWindow(QMainWindow):
         self.enable_btn = QPushButton("Enable")
         self.disable_btn = QPushButton("Disable")
         self.delete_btn = QPushButton("Delete")
+        self.settings_btn = QPushButton("Settings")
         self.refresh_btn = QPushButton("Refresh")
         for button in (
             self.create_btn,
@@ -61,6 +63,7 @@ class MainWindow(QMainWindow):
             self.enable_btn,
             self.disable_btn,
             self.delete_btn,
+            self.settings_btn,
             self.refresh_btn,
         ):
             buttons.addWidget(button)
@@ -109,6 +112,7 @@ class MainWindow(QMainWindow):
         self.enable_btn.clicked.connect(lambda: self._set_enabled(True))
         self.disable_btn.clicked.connect(lambda: self._set_enabled(False))
         self.delete_btn.clicked.connect(self._delete_selected)
+        self.settings_btn.clicked.connect(self._open_settings)
         self.refresh_btn.clicked.connect(self.refresh)
 
         self.tray: TaskForgeTray | None = None
@@ -261,6 +265,27 @@ class MainWindow(QMainWindow):
             self.refresh()
         except Exception as exc:
             QMessageBox.critical(self, "Delete Failed", str(exc))
+
+    def _open_settings(self) -> None:
+        dialog = SettingsDialog(self)
+        if dialog.exec() != SettingsDialog.DialogCode.Accepted:
+            return
+        new_path = dialog.selected_db_path()
+        if not new_path:
+            return
+        try:
+            current = str(self.service.database_path())
+        except Exception:
+            current = ""
+        if new_path == current:
+            return
+        try:
+            path = self.service.set_database_path(new_path)
+            self.output.setPlainText(f"Using database:\n{path}")
+            self.refresh()
+            self.statusBar().showMessage(f"Database: {path}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Settings Failed", str(exc))
 
     def show_from_tray(self) -> None:
         self.showNormal()
