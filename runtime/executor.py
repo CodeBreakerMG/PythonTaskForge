@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import traceback
@@ -13,6 +14,11 @@ from loguru import logger
 
 from database.database import get_session
 from database.models import History, Log, TaskRecord
+from runtime.console_logs import (
+    append_console_line,
+    append_console_marker,
+    console_log_path,
+)
 from runtime.task import Task
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -26,12 +32,14 @@ class ExecutionResult:
         error: str = "",
         duration: float = 0.0,
         history_id: int | None = None,
+        console_log: Path | None = None,
     ) -> None:
         self.status = status
         self.output = output
         self.error = error
         self.duration = duration
         self.history_id = history_id
+        self.console_log = console_log
 
     @property
     def ok(self) -> bool:
@@ -46,6 +54,7 @@ class Executor:
             raise ValueError(f"Task {task.name!r} has no database id")
 
         started = datetime.utcnow()
+        log_path = console_log_path(task.id, task.name)
         session = get_session()
         history = History(
             task_id=task.id,
@@ -65,16 +74,18 @@ class Executor:
         finally:
             session.close()
 
-        logger.info("Running task: {}", task.name)
+        append_console_marker(log_path, f"RUN START — {task.name}")
+        logger.info("Running task: {} (console log: {})", task.name, log_path)
         output = ""
         error = ""
         status = "success"
 
         try:
-            output = self._execute(task)
+            output = self._execute(task, log_path)
         except Exception as exc:
             status = "failed"
             error = f"{exc}\n{traceback.format_exc()}"
+            append_console_line(log_path, error)
             logger.error("Task failed: {} — {}", task.name, exc)
 
         ended = datetime.utcnow()
@@ -82,6 +93,12 @@ class Executor:
         combined_log = output
         if error:
             combined_log = (combined_log + "\n" + error).strip()
+
+        append_console_marker(
+            log_path,
+            f"RUN END — {status} ({duration:.2f}s)",
+        )
+        append_console_line(log_path, "")
 
         session = get_session()
         try:
@@ -124,9 +141,10 @@ class Executor:
             error=error,
             duration=duration,
             history_id=history_id,
+            console_log=log_path,
         )
 
-    def _execute(self, task: Task) -> str:
+    def _execute(self, task: Task, log_path: Path) -> str:
         command = (task.command or "").strip().lower()
         target = (task.target or "").strip()
         if not target:
@@ -145,14 +163,17 @@ class Executor:
                     "For Action=script, Target must be the .py file path only "
                     "(example: /Users/you/project/script.py)."
                 )
-            return self._run_subprocess([sys.executable, str(script_path), *args])
+            return self._run_subprocess(
+                [sys.executable, "-u", str(script_path), *args],
+                log_path=log_path,
+            )
 
         if command in {"command", "shell", "bash"}:
-            return self._run_subprocess(target, shell=True)
+            return self._run_subprocess(target, shell=True, log_path=log_path)
 
         # Fallback: treat target as a shell command string.
         full = " ".join([target, *args]).strip()
-        return self._run_subprocess(full, shell=True)
+        return self._run_subprocess(full, shell=True, log_path=log_path)
 
     def _extract_script_path(self, target: str) -> str:
         """Strip leading python/python3 from a pasted command line."""
@@ -169,23 +190,37 @@ class Executor:
             path = PROJECT_ROOT / path
         return path.resolve()
 
-    def _run_subprocess(self, cmd: Any, shell: bool = False) -> str:
-        completed = subprocess.run(
+    def _run_subprocess(
+        self,
+        cmd: Any,
+        *,
+        shell: bool = False,
+        log_path: Path,
+    ) -> str:
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+
+        process = subprocess.Popen(
             cmd,
             shell=shell,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
+            bufsize=1,
             cwd=str(PROJECT_ROOT),
-            check=False,
+            env=env,
         )
-        chunks = []
-        if completed.stdout:
-            chunks.append(completed.stdout.strip())
-        if completed.stderr:
-            chunks.append(completed.stderr.strip())
-        output = "\n".join(chunks).strip()
-        if completed.returncode != 0:
+
+        collected: list[str] = []
+        assert process.stdout is not None
+        for line in process.stdout:
+            collected.append(line.rstrip("\n"))
+            append_console_line(log_path, line)
+
+        return_code = process.wait()
+        output = "\n".join(collected).strip()
+        if return_code != 0:
             raise RuntimeError(
-                f"Command exited with code {completed.returncode}\n{output}"
+                f"Command exited with code {return_code}\n{output}"
             )
         return output

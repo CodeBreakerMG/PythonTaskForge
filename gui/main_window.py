@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QFont, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -27,13 +28,32 @@ from runtime.notifications import set_tray_hook
 from runtime.service import TaskForgeService
 
 
+class _RunTaskWorker(QThread):
+    finished_ok = Signal(object)
+    finished_error = Signal(str)
+
+    def __init__(self, service: TaskForgeService, task_name: str) -> None:
+        super().__init__()
+        self._service = service
+        self._task_name = task_name
+
+    def run(self) -> None:
+        try:
+            result = self._service.run_task(self._task_name)
+            self.finished_ok.emit(result)
+        except Exception as exc:
+            self.finished_error.emit(str(exc))
+
+
 class MainWindow(QMainWindow):
     def __init__(self, service: TaskForgeService) -> None:
         super().__init__()
         self.service = service
         self._force_quit = False
+        self._viewing_task: str | None = None
+        self._run_worker: _RunTaskWorker | None = None
         self.setWindowTitle("TaskForge")
-        self.resize(1000, 640)
+        self.resize(1000, 720)
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -95,13 +115,25 @@ class MainWindow(QMainWindow):
         self.history_table.horizontalHeader().setStretchLastSection(True)
         bottom_layout.addWidget(self.history_table)
 
-        bottom_layout.addWidget(QLabel("Output"))
+        console_header = QHBoxLayout()
+        self.console_label = QLabel("Console output — select a task")
+        console_header.addWidget(self.console_label, stretch=1)
+        self.reload_console_btn = QPushButton("Reload Log")
+        console_header.addWidget(self.reload_console_btn)
+        bottom_layout.addLayout(console_header)
+
         self.output = QTextEdit()
         self.output.setReadOnly(True)
-        self.output.setMaximumHeight(140)
+        self.output.setMinimumHeight(180)
+        mono = QFont("Menlo")
+        if not mono.exactMatch():
+            mono = QFont("Courier New")
+        mono.setStyleHint(QFont.StyleHint.Monospace)
+        mono.setPointSize(11)
+        self.output.setFont(mono)
         bottom_layout.addWidget(self.output)
         splitter.addWidget(bottom)
-        splitter.setSizes([320, 280])
+        splitter.setSizes([280, 360])
 
         self.setStatusBar(QStatusBar())
         self.statusBar().showMessage("Ready")
@@ -114,6 +146,8 @@ class MainWindow(QMainWindow):
         self.delete_btn.clicked.connect(self._delete_selected)
         self.settings_btn.clicked.connect(self._open_settings)
         self.refresh_btn.clicked.connect(self.refresh)
+        self.reload_console_btn.clicked.connect(self._reload_selected_console)
+        self.task_table.itemSelectionChanged.connect(self._on_task_selected)
 
         self.tray: TaskForgeTray | None = None
         if QSystemTrayIcon.isSystemTrayAvailable():
@@ -128,9 +162,15 @@ class MainWindow(QMainWindow):
             set_tray_hook(None)
             self.statusBar().showMessage("Ready")
 
+        self._console_timer = QTimer(self)
+        self._console_timer.setInterval(1000)
+        self._console_timer.timeout.connect(self._poll_console_log)
+        self._console_timer.start()
+
         self.refresh()
 
     def refresh(self) -> None:
+        selected = self._selected_task_name()
         tasks = self.service.registry.list_tasks()
         self.task_table.setRowCount(len(tasks))
         for row, task in enumerate(tasks):
@@ -141,7 +181,11 @@ class MainWindow(QMainWindow):
             elif schedule.get("dates"):
                 schedule_label = f"{schedule_label}: {', '.join(schedule['dates'])}"
 
-            last_run = task.last_run.isoformat(sep=" ", timespec="seconds") if task.last_run else "—"
+            last_run = (
+                task.last_run.isoformat(sep=" ", timespec="seconds")
+                if task.last_run
+                else "—"
+            )
             values = [
                 task.name,
                 task.status,
@@ -153,6 +197,13 @@ class MainWindow(QMainWindow):
             for col, value in enumerate(values):
                 self.task_table.setItem(row, col, QTableWidgetItem(value))
 
+        if selected:
+            for row in range(self.task_table.rowCount()):
+                item = self.task_table.item(row, 0)
+                if item and item.text() == selected:
+                    self.task_table.selectRow(row)
+                    break
+
         history = self.service.recent_history(limit=30)
         self.history_table.setRowCount(len(history))
         for row, item in enumerate(history):
@@ -161,7 +212,9 @@ class MainWindow(QMainWindow):
                 if item["started"]
                 else "—"
             )
-            duration = f"{item['duration']:.2f}s" if item["duration"] is not None else "—"
+            duration = (
+                f"{item['duration']:.2f}s" if item["duration"] is not None else "—"
+            )
             log_preview = (item["log"] or "").replace("\n", " ")[:120]
             values = [
                 item["task_name"],
@@ -174,6 +227,8 @@ class MainWindow(QMainWindow):
                 self.history_table.setItem(row, col, QTableWidgetItem(value))
 
         self.statusBar().showMessage(f"{len(tasks)} task(s) loaded")
+        if selected:
+            self._show_console_for(selected)
 
     def _selected_task_name(self) -> str | None:
         rows = self.task_table.selectionModel().selectedRows()
@@ -181,6 +236,42 @@ class MainWindow(QMainWindow):
             return None
         item = self.task_table.item(rows[0].row(), 0)
         return item.text() if item else None
+
+    def _on_task_selected(self) -> None:
+        name = self._selected_task_name()
+        if name:
+            self._show_console_for(name)
+        else:
+            self._viewing_task = None
+            self.console_label.setText("Console output — select a task")
+            self.output.setPlainText("")
+
+    def _reload_selected_console(self) -> None:
+        name = self._selected_task_name()
+        if not name:
+            QMessageBox.information(self, "Console", "Select a task first.")
+            return
+        self._show_console_for(name)
+
+    def _show_console_for(self, name: str) -> None:
+        self._viewing_task = name
+        log_file = self.service.console_log_file(name)
+        path_note = f" — {log_file}" if log_file else ""
+        self.console_label.setText(f"Console output — {name}{path_note}")
+        try:
+            text = self.service.get_console_log(name)
+        except Exception as exc:
+            text = f"(Could not read console log: {exc})"
+        scrollbar = self.output.verticalScrollBar()
+        stick_bottom = scrollbar.value() >= scrollbar.maximum() - 20
+        self.output.setPlainText(text)
+        if stick_bottom:
+            self.output.moveCursor(QTextCursor.MoveOperation.End)
+
+    def _poll_console_log(self) -> None:
+        if not self.isVisible() or not self._viewing_task:
+            return
+        self._show_console_for(self._viewing_task)
 
     def _create_task(self) -> None:
         dialog = TaskEditorDialog(self)
@@ -191,9 +282,9 @@ class MainWindow(QMainWindow):
             return
         try:
             self.service.add_task(task)
-            self.output.setPlainText(f"Created task: {task.name}")
             self.refresh()
             self.statusBar().showMessage(f"Created task: {task.name}")
+            self._show_console_for(task.name)
         except Exception as exc:
             QMessageBox.critical(self, "Create Failed", str(exc))
 
@@ -215,9 +306,9 @@ class MainWindow(QMainWindow):
             return
         try:
             self.service.update_task(task)
-            self.output.setPlainText(f"Updated task: {task.name}")
             self.refresh()
             self.statusBar().showMessage(f"Updated task: {task.name}")
+            self._show_console_for(task.name)
         except Exception as exc:
             QMessageBox.critical(self, "Modify Failed", str(exc))
 
@@ -226,15 +317,41 @@ class MainWindow(QMainWindow):
         if not name:
             QMessageBox.information(self, "Run Task", "Select a task first.")
             return
-        try:
-            result = self.service.run_task(name)
-            self.output.setPlainText(
-                f"[{result.status}] {name} in {result.duration:.2f}s\n\n"
-                f"{result.output or ''}\n{result.error or ''}".strip()
+        if self._run_worker is not None and self._run_worker.isRunning():
+            QMessageBox.information(
+                self,
+                "Run Task",
+                "A task is already running from the dashboard. Wait for it to finish.",
             )
-            self.refresh()
-        except Exception as exc:
-            QMessageBox.critical(self, "Run Failed", str(exc))
+            return
+
+        self._show_console_for(name)
+        self.run_btn.setEnabled(False)
+        self.statusBar().showMessage(f"Running {name}…")
+
+        worker = _RunTaskWorker(self.service, name)
+        self._run_worker = worker
+        worker.finished_ok.connect(self._on_run_finished)
+        worker.finished_error.connect(self._on_run_failed)
+        worker.finished.connect(lambda: self.run_btn.setEnabled(True))
+        worker.start()
+
+    def _on_run_finished(self, result) -> None:
+        name = self._viewing_task or self._selected_task_name() or "task"
+        self.refresh()
+        if name:
+            self._show_console_for(name)
+        self.statusBar().showMessage(
+            f"[{result.status}] {name} in {result.duration:.2f}s"
+        )
+
+    def _on_run_failed(self, message: str) -> None:
+        name = self._viewing_task or self._selected_task_name()
+        QMessageBox.critical(self, "Run Failed", message)
+        if name:
+            self._show_console_for(name)
+        self.refresh()
+        self.statusBar().showMessage("Run failed")
 
     def _set_enabled(self, enabled: bool) -> None:
         name = self._selected_task_name()
@@ -261,7 +378,9 @@ class MainWindow(QMainWindow):
             return
         try:
             self.service.remove_task(name)
+            self._viewing_task = None
             self.output.setPlainText(f"Deleted task: {name}")
+            self.console_label.setText("Console output — select a task")
             self.refresh()
         except Exception as exc:
             QMessageBox.critical(self, "Delete Failed", str(exc))

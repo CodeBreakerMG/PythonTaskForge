@@ -53,9 +53,10 @@ You get:
 | **Scheduling** | Manual, daily, weekly, one-time / multi-date |
 | **Dashboard** | Create, modify, run, enable/disable, delete |
 | **History** | Recent runs with status, duration, and output |
+| **Console logs** | Live per-task stdout/stderr files; click a task to view |
 | **Tray** | Close window → stays in menu bar; Dock click reopens |
 | **Notifications** | macOS alerts on success / failure |
-| **Storage** | Local SQLite DB (`database/taskforge.db`, gitignored) |
+| **Storage** | Configurable local SQLite DB |
 
 ---
 
@@ -145,6 +146,22 @@ Target:  df -h
 - Click the window **X** → dashboard hides; runtime **keeps running**
 - Reopen from the **Dock** icon or the menu-bar **TF** icon → **Open Dashboard**
 - Fully exit with tray menu → **Quit TaskForge**
+
+---
+
+## Console logs
+
+Each task writes its own console log file. While a job runs, every stdout/stderr line is appended immediately.
+
+- Click a task in the dashboard to view its console log
+- The panel refreshes about once per second while you keep that task selected
+- Log files live in:
+
+```text
+~/Library/Application Support/TaskForge/console_logs/
+```
+
+Example filename: `3_Agenda_Report.log`
 
 ---
 

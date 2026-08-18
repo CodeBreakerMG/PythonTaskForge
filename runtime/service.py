@@ -9,6 +9,7 @@ from loguru import logger
 from config.settings import AppSettings, load_settings, save_settings
 from database.database import get_db_path, get_session, init_db
 from database.models import History
+from runtime.console_logs import console_log_path, read_console_log
 from runtime.executor import ExecutionResult, Executor
 from runtime.notifications import notify, notify_task_result
 from runtime.registry import TaskRegistry
@@ -115,6 +116,20 @@ class TaskForgeService:
         self.registry.update(task)
         self.scheduler.reload()
         return task
+
+    def get_console_log(self, name: str) -> str:
+        task = self.registry.get(name)
+        if task is None:
+            raise ValueError(f"Task not found: {name!r}")
+        if task.id is None:
+            return "(Task has no database id yet.)"
+        return read_console_log(task.id, task.name)
+
+    def console_log_file(self, name: str) -> Path | None:
+        task = self.registry.get(name)
+        if task is None or task.id is None:
+            return None
+        return console_log_path(task.id, task.name)
 
     def recent_history(self, limit: int = 50, task_name: str | None = None) -> list[dict]:
         session = get_session()
