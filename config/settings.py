@@ -36,6 +36,7 @@ def default_db_path() -> Path:
 @dataclass
 class AppSettings:
     db_path: str
+    keep_running_in_tray: bool = True
 
     @classmethod
     def defaults(cls) -> "AppSettings":
@@ -53,7 +54,13 @@ def load_settings() -> AppSettings:
         return AppSettings.defaults()
 
     db_path = raw.get("db_path") or str(default_db_path())
-    return AppSettings(db_path=str(Path(db_path).expanduser()))
+    keep_running_in_tray = raw.get("keep_running_in_tray", True)
+    if not isinstance(keep_running_in_tray, bool):
+        keep_running_in_tray = True
+    return AppSettings(
+        db_path=str(Path(db_path).expanduser()),
+        keep_running_in_tray=keep_running_in_tray,
+    )
 
 
 def save_settings(settings: AppSettings) -> Path:

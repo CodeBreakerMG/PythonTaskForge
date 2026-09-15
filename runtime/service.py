@@ -9,7 +9,11 @@ from loguru import logger
 from config.settings import AppSettings, load_settings, save_settings
 from database.database import get_db_path, get_session, init_db
 from database.models import History
-from runtime.console_logs import console_log_path, read_console_log
+from runtime.console_logs import (
+    latest_console_log,
+    read_console_log,
+    task_console_dir,
+)
 from runtime.executor import ExecutionResult, Executor
 from runtime.notifications import notify, notify_task_result
 from runtime.registry import TaskRegistry
@@ -44,7 +48,12 @@ class TaskForgeService:
         settings = load_settings()
         db_path = init_db(settings.db_path)
         # Persist resolved defaults the first time so Settings shows a real path.
-        save_settings(AppSettings(db_path=str(db_path)))
+        save_settings(
+            AppSettings(
+                db_path=str(db_path),
+                keep_running_in_tray=settings.keep_running_in_tray,
+            )
+        )
         self.registry.load()
         self._ensure_sample_task()
         self.scheduler.start()
@@ -67,7 +76,11 @@ class TaskForgeService:
         if was_running:
             self.scheduler.shutdown()
 
-        settings = AppSettings(db_path=str(Path(db_path).expanduser()))
+        current = load_settings()
+        settings = AppSettings(
+            db_path=str(Path(db_path).expanduser()),
+            keep_running_in_tray=current.keep_running_in_tray,
+        )
         save_settings(settings)
         path = init_db(settings.db_path)
         self.registry.load()
@@ -129,7 +142,13 @@ class TaskForgeService:
         task = self.registry.get(name)
         if task is None or task.id is None:
             return None
-        return console_log_path(task.id, task.name)
+        return latest_console_log(task.id, task.name)
+
+    def console_log_dir(self, name: str) -> Path | None:
+        task = self.registry.get(name)
+        if task is None or task.id is None:
+            return None
+        return task_console_dir(task.id, task.name)
 
     def recent_history(self, limit: int = 50, task_name: str | None = None) -> list[dict]:
         session = get_session()

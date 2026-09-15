@@ -1,0 +1,34 @@
+1. Quit the running app
+Tray → Quit TaskForge, or unload launchd first:
+./scripts/install_launchd.sh --uninstall
+(If launchd has KeepAlive, quitting alone may relaunch it — uninstall/unload is safer before replacing the app.)
+
+2. Rebuild from the project
+cd /Users/manuelmoran/Documents/PROJECTS/PythonTaskForge
+source .venv/bin/activate
+pip install -r requirements.txt
+pip install pyinstaller
+pyinstaller \
+  --name TaskForge \
+  --windowed \
+  --noconfirm \
+  --clean \
+  --osx-bundle-identifier com.taskforge.runtime \
+  --add-data "tasks:tasks" \
+  app.py
+3. Replace the installed app
+rm -rf /Applications/TaskForge.app
+cp -R dist/TaskForge.app /Applications/
+4. Re-enable launchd (if you use it)
+./scripts/install_launchd.sh /Applications/TaskForge.app
+That rewrites the plist and starts the new binary.
+
+If you only run from source (no .app)
+Just pull/update code and restart:
+
+source .venv/bin/activate
+pip install -r requirements.txt
+python app.py
+If a LaunchAgent still points at the old .app, either update it with the script above, or change that plist to run .venv/bin/python app.py instead.
+
+Summary: uninstall launchd → rebuild .app → copy to /Applications → install_launchd.sh again. Your DB/settings should still be there.

@@ -1,4 +1,4 @@
-# Per-task console log files — line-by-line output while jobs run.
+# Per-run console log files — line-by-line output while jobs run.
 
 from __future__ import annotations
 
@@ -22,9 +22,30 @@ def safe_task_slug(name: str) -> str:
     return slug or "task"
 
 
-def console_log_path(task_id: int, task_name: str = "") -> Path:
-    slug = safe_task_slug(task_name)
-    return console_logs_dir() / f"{task_id}_{slug}.log"
+def task_console_dir(task_id: int, task_name: str = "", *, create: bool = True) -> Path:
+    path = console_logs_dir() / f"{task_id}_{safe_task_slug(task_name)}"
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def console_log_path(
+    task_id: int,
+    task_name: str = "",
+    *,
+    history_id: int,
+    started: datetime | None = None,
+) -> Path:
+    stamp = (started or datetime.now()).strftime("%Y%m%d_%H%M%S")
+    return task_console_dir(task_id, task_name) / f"{stamp}_{history_id}.log"
+
+
+def latest_console_log(task_id: int, task_name: str = "") -> Path | None:
+    folder = task_console_dir(task_id, task_name, create=False)
+    if not folder.exists():
+        return None
+    files = sorted(folder.glob("*.log"))
+    return files[-1] if files else None
 
 
 def append_console_line(log_path: Path, line: str) -> None:
@@ -40,9 +61,10 @@ def append_console_marker(log_path: Path, message: str) -> None:
 
 
 def read_console_log(task_id: int, task_name: str = "", *, max_chars: int = 200_000) -> str:
-    path = console_log_path(task_id, task_name)
-    if not path.exists():
-        return f"(No console log yet for this task.)\nExpected file:\n{path}"
+    folder = task_console_dir(task_id, task_name, create=False)
+    path = latest_console_log(task_id, task_name)
+    if path is None:
+        return f"(No console log yet for this task.)\nExpected folder:\n{folder}"
 
     text = path.read_text(encoding="utf-8", errors="replace")
     if len(text) > max_chars:
@@ -54,6 +76,8 @@ def read_console_log(task_id: int, task_name: str = "", *, max_chars: int = 200_
 
 
 def clear_console_log(task_id: int, task_name: str = "") -> None:
-    path = console_log_path(task_id, task_name)
-    if path.exists():
+    folder = task_console_dir(task_id, task_name, create=False)
+    if not folder.exists():
+        return
+    for path in folder.glob("*.log"):
         path.write_text("", encoding="utf-8")

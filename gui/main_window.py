@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QThread, QTimer, Signal
+import subprocess
+
+from PySide6.QtCore import QEvent, QObject, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QFont, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
@@ -21,11 +23,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from config.settings import load_settings
 from gui.settings_dialog import SettingsDialog
 from gui.task_editor import TaskEditorDialog
 from gui.tray import TaskForgeTray
+from runtime.launchd_agent import handoff_to_launchd_supervision, sync_crash_recovery_agent
 from runtime.notifications import set_tray_hook
 from runtime.service import TaskForgeService
+from runtime.single_instance import release
 
 
 class _RunTaskWorker(QThread):
@@ -50,6 +55,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.service = service
         self._force_quit = False
+        self._keep_running_in_tray = load_settings().keep_running_in_tray
+        self._dock_filter: QObject | None = None
         self._viewing_task: str | None = None
         self._run_worker: _RunTaskWorker | None = None
         self.setWindowTitle("TaskForge")
@@ -119,7 +126,9 @@ class MainWindow(QMainWindow):
         self.console_label = QLabel("Console output — select a task")
         console_header.addWidget(self.console_label, stretch=1)
         self.reload_console_btn = QPushButton("Reload Log")
+        self.open_logs_btn = QPushButton("Show in Finder")
         console_header.addWidget(self.reload_console_btn)
+        console_header.addWidget(self.open_logs_btn)
         bottom_layout.addLayout(console_header)
 
         self.output = QTextEdit()
@@ -147,6 +156,7 @@ class MainWindow(QMainWindow):
         self.settings_btn.clicked.connect(self._open_settings)
         self.refresh_btn.clicked.connect(self.refresh)
         self.reload_console_btn.clicked.connect(self._reload_selected_console)
+        self.open_logs_btn.clicked.connect(self._open_selected_logs_in_finder)
         self.task_table.itemSelectionChanged.connect(self._on_task_selected)
 
         self.tray: TaskForgeTray | None = None
@@ -155,9 +165,7 @@ class MainWindow(QMainWindow):
             self.tray.open_requested.connect(self.show_from_tray)
             self.tray.quit_requested.connect(self.quit_app)
             set_tray_hook(self.tray.show_message)
-            self.statusBar().showMessage(
-                "Ready — close window to keep running in the menu bar"
-            )
+            self._update_tray_status_message()
         else:
             set_tray_hook(None)
             self.statusBar().showMessage("Ready")
@@ -168,6 +176,49 @@ class MainWindow(QMainWindow):
         self._console_timer.start()
 
         self.refresh()
+
+    def install_dock_reopen_handlers(self) -> None:
+        app = QApplication.instance()
+        if app is None or self._dock_filter is not None:
+            return
+
+        window = self
+
+        class _DockReopenFilter(QObject):
+            def eventFilter(self, obj, event):  # noqa: N802
+                if event.type() == QEvent.Type.ApplicationActivate:
+                    if (
+                        not window._force_quit
+                        and window._keep_running_in_tray
+                        and not window.isVisible()
+                    ):
+                        window.show_from_tray()
+                return super().eventFilter(obj, event)
+
+        self._dock_filter = _DockReopenFilter(self)
+        app.installEventFilter(self._dock_filter)
+        app.applicationStateChanged.connect(self._on_app_state_changed)
+
+    def remove_dock_reopen_handlers(self) -> None:
+        app = QApplication.instance()
+        if app is None:
+            return
+        if self._dock_filter is not None:
+            app.removeEventFilter(self._dock_filter)
+            self._dock_filter = None
+        try:
+            app.applicationStateChanged.disconnect(self._on_app_state_changed)
+        except TypeError:
+            pass
+
+    def _on_app_state_changed(self, state) -> None:
+        if state == Qt.ApplicationState.ApplicationActive:
+            if (
+                not self._force_quit
+                and self._keep_running_in_tray
+                and not self.isVisible()
+            ):
+                self.show_from_tray()
 
     def refresh(self) -> None:
         selected = self._selected_task_name()
@@ -253,9 +304,24 @@ class MainWindow(QMainWindow):
             return
         self._show_console_for(name)
 
+    def _open_selected_logs_in_finder(self) -> None:
+        name = self._selected_task_name()
+        if not name:
+            QMessageBox.information(self, "Logs", "Select a task first.")
+            return
+        folder = self.service.console_log_dir(name)
+        if folder is None:
+            QMessageBox.warning(self, "Logs", "Task has no log folder yet.")
+            return
+        folder.mkdir(parents=True, exist_ok=True)
+        try:
+            subprocess.run(["open", str(folder)], check=False)
+        except OSError as exc:
+            QMessageBox.critical(self, "Logs", f"Could not open Finder:\n{exc}")
+
     def _show_console_for(self, name: str) -> None:
         self._viewing_task = name
-        log_file = self.service.console_log_file(name)
+        log_file = self.service.console_log_file(name) or self.service.console_log_dir(name)
         path_note = f" — {log_file}" if log_file else ""
         self.console_label.setText(f"Console output — {name}{path_note}")
         try:
@@ -389,22 +455,60 @@ class MainWindow(QMainWindow):
         dialog = SettingsDialog(self)
         if dialog.exec() != SettingsDialog.DialogCode.Accepted:
             return
-        new_path = dialog.selected_db_path()
-        if not new_path:
+        saved = dialog.saved_settings()
+        if saved is None:
             return
+
+        if saved.keep_running_in_tray != self._keep_running_in_tray:
+            self._apply_tray_setting(saved.keep_running_in_tray)
+
         try:
             current = str(self.service.database_path())
         except Exception:
             current = ""
-        if new_path == current:
+        if saved.db_path == current:
             return
         try:
-            path = self.service.set_database_path(new_path)
+            path = self.service.set_database_path(saved.db_path)
             self.output.setPlainText(f"Using database:\n{path}")
             self.refresh()
             self.statusBar().showMessage(f"Database: {path}")
         except Exception as exc:
             QMessageBox.critical(self, "Settings Failed", str(exc))
+
+    def _apply_tray_setting(self, keep_running: bool) -> None:
+        self._keep_running_in_tray = keep_running
+        app = QApplication.instance()
+        if app is not None:
+            app.setQuitOnLastWindowClosed(not keep_running)
+        if keep_running:
+            self.install_dock_reopen_handlers()
+        else:
+            self.remove_dock_reopen_handlers()
+        ok, message, needs_handoff = sync_crash_recovery_agent(keep_running)
+        if keep_running and needs_handoff and ok:
+            release()
+            ok, message = handoff_to_launchd_supervision()
+            if ok:
+                self.statusBar().showMessage(
+                    "Crash recovery enabled — restarting under launchd…",
+                    5000,
+                )
+                QTimer.singleShot(300, self.quit_app)
+                return
+        self._update_tray_status_message()
+        if ok:
+            self.statusBar().showMessage(message, 8000)
+        else:
+            QMessageBox.warning(self, "Background Service", message)
+
+    def _update_tray_status_message(self) -> None:
+        if self._keep_running_in_tray:
+            self.statusBar().showMessage(
+                "Ready — close window to keep running in the menu bar"
+            )
+        else:
+            self.statusBar().showMessage("Ready — close window to quit TaskForge")
 
     def show_from_tray(self) -> None:
         self.showNormal()
@@ -414,7 +518,11 @@ class MainWindow(QMainWindow):
 
     def quit_app(self) -> None:
         """Fully stop the runtime and exit (from tray menu)."""
+        if self._force_quit:
+            return
         self._force_quit = True
+        self.remove_dock_reopen_handlers()
+        set_tray_hook(None)
         self.service.stop()
         app = QApplication.instance()
         if app is not None:
@@ -422,7 +530,11 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802
         # Chrome-style: X hides the window; runtime keeps going in the tray.
-        if not self._force_quit and self.tray is not None:
+        if (
+            not self._force_quit
+            and self._keep_running_in_tray
+            and self.tray is not None
+        ):
             event.ignore()
             self.hide()
             from runtime.notifications import notify
@@ -432,6 +544,11 @@ class MainWindow(QMainWindow):
                 "Click the Dock icon or the menu-bar TF icon to reopen. "
                 "Use Quit TaskForge to exit.",
             )
+            return
+
+        if not self._force_quit:
+            event.accept()
+            self.quit_app()
             return
 
         set_tray_hook(None)

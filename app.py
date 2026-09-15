@@ -13,20 +13,45 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-def run_gui() -> int:
-    from PySide6.QtCore import QEvent, QObject, Qt
+def is_supervised_startup(start_in_background: bool) -> bool:
+    """True when this process is already the launchd-managed background instance."""
+    if not start_in_background:
+        return False
+    from runtime.launchd_agent import is_supervised_by_launchd
+
+    return is_supervised_by_launchd()
+
+
+def run_gui(*, start_in_background: bool = False) -> int:
     from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
+    from config.settings import load_settings
     from gui.main_window import MainWindow
+    from runtime.launchd_agent import handoff_to_launchd_supervision, prepare_crash_recovery
     from runtime.service import TaskForgeService
+    from runtime.single_instance import acquire, release
 
+    if not acquire():
+        return 0
+
+    settings = load_settings()
+    if settings.keep_running_in_tray and not is_supervised_startup(start_in_background):
+        ok, message, needs_handoff = prepare_crash_recovery()
+        if not ok:
+            print(message, file=sys.stderr)
+        elif needs_handoff:
+            release()
+            ok, message = handoff_to_launchd_supervision()
+            if not ok:
+                print(message, file=sys.stderr)
+            return 0
     service = TaskForgeService()
     service.start()
 
     app = QApplication(sys.argv)
     app.setApplicationName("TaskForge")
-    # Keep process alive when the main window is hidden to the tray.
-    app.setQuitOnLastWindowClosed(False)
+    app.setQuitOnLastWindowClosed(not settings.keep_running_in_tray)
+    app.aboutToQuit.connect(release)
 
     if not QSystemTrayIcon.isSystemTrayAvailable():
         print(
@@ -35,27 +60,22 @@ def run_gui() -> int:
         )
 
     window = MainWindow(service)
+    if settings.keep_running_in_tray:
+        window.install_dock_reopen_handlers()
 
-    class _DockReopenFilter(QObject):
-        """Re-show the dashboard when the user clicks the macOS Dock icon."""
+    if start_in_background and settings.keep_running_in_tray:
+        if window.tray is not None:
+            window.hide()
+            from runtime.notifications import notify
 
-        def eventFilter(self, obj, event):  # noqa: N802
-            if event.type() == QEvent.Type.ApplicationActivate:
-                if not window._force_quit and not window.isVisible():
-                    window.show_from_tray()
-            return super().eventFilter(obj, event)
-
-    dock_filter = _DockReopenFilter(app)
-    app.installEventFilter(dock_filter)
-
-    def _on_app_state_changed(state) -> None:
-        if state == Qt.ApplicationState.ApplicationActive:
-            if not window._force_quit and not window.isVisible():
-                window.show_from_tray()
-
-    app.applicationStateChanged.connect(_on_app_state_changed)
-
-    window.show()
+            notify(
+                "TaskForge restarted",
+                "Recovered after an unexpected exit. Use the menu-bar TF icon to reopen.",
+            )
+        else:
+            window.show()
+    else:
+        window.show()
     code = app.exec()
     service.stop()
     return code
@@ -111,13 +131,18 @@ def main() -> int:
         metavar="TASK",
         help="Run a task by name (no GUI) and exit",
     )
+    parser.add_argument(
+        "--background",
+        action="store_true",
+        help="Start without opening the dashboard (used by launchd)",
+    )
     args = parser.parse_args()
 
     if args.list:
         return list_tasks()
     if args.run:
         return run_once(args.run)
-    return run_gui()
+    return run_gui(start_in_background=args.background)
 
 
 if __name__ == "__main__":

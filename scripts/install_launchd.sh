@@ -87,13 +87,17 @@ install_agent() {
   <key>ProgramArguments</key>
   <array>
     <string>${binary}</string>
+    <string>--background</string>
   </array>
 
   <key>RunAtLoad</key>
   <true/>
 
   <key>KeepAlive</key>
-  <true/>
+  <dict>
+    <key>SuccessfulExit</key>
+    <true/>
+  </dict>
 
   <key>StandardOutPath</key>
   <string>${LOG_DIR}/launchd.out.log</string>

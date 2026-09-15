@@ -53,7 +53,7 @@ You get:
 | **Scheduling** | Manual, daily, weekly, one-time / multi-date |
 | **Dashboard** | Create, modify, run, enable/disable, delete |
 | **History** | Recent runs with status, duration, and output |
-| **Console logs** | Live per-task stdout/stderr files; click a task to view |
+| **Console logs** | One file per run; click a task to view the latest; Show in Finder |
 | **Tray** | Close window → stays in menu bar; Dock click reopens |
 | **Notifications** | macOS alerts on success / failure |
 | **Storage** | Configurable local SQLite DB |
@@ -151,17 +151,18 @@ Target:  df -h
 
 ## Console logs
 
-Each task writes its own console log file. While a job runs, every stdout/stderr line is appended immediately.
+Each execution writes its own console log file. While a job runs, every stdout/stderr line is appended immediately.
 
-- Click a task in the dashboard to view its console log
+- Click a task in the dashboard to view its **latest** run
 - The panel refreshes about once per second while you keep that task selected
+- **Show in Finder** opens that task’s log folder
 - Log files live in:
 
 ```text
-~/Library/Application Support/TaskForge/console_logs/
+~/Library/Application Support/TaskForge/console_logs/<task_id>_<name>/
 ```
 
-Example filename: `3_Agenda_Report.log`
+Example: `3_Agenda_Report/20260915_151203_42.log`
 
 ---
 

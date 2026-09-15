@@ -54,7 +54,6 @@ class Executor:
             raise ValueError(f"Task {task.name!r} has no database id")
 
         started = datetime.utcnow()
-        log_path = console_log_path(task.id, task.name)
         session = get_session()
         history = History(
             task_id=task.id,
@@ -73,6 +72,13 @@ class Executor:
             history_id = history.id
         finally:
             session.close()
+
+        log_path = console_log_path(
+            task.id,
+            task.name,
+            history_id=history_id,
+            started=started,
+        )
 
         append_console_marker(log_path, f"RUN START — {task.name}")
         logger.info("Running task: {} (console log: {})", task.name, log_path)
